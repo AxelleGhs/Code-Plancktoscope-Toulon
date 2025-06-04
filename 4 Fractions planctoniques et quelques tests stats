@@ -1,0 +1,178 @@
+#4
+#Fractions planctoniques et quelques tests stats
+#Ce script prend en entrée un dossier de fichiers excel (GR et PR unisuqement) et rend plusieurs choses : un graphique baton montrant les fraction zoo/phyto/non-vivant pour plsuieurs échantillons, des tests statistiques de type ANOVA et regressions linéaires 
+#A noter : la liste des groupes taxo n'est pas exhaustive du tout, il ets possible de rajouter les taxons manquant (en choisissant si c'est zoo, phyto ou non-vivant)
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(lubridate)
+library(scales)
+
+# 📁 Sélection d’un fichier pour obtenir le chemin du dossier de fichiers excel de dénombrement
+un_fichier_du_dossier <- file.choose()
+dossier_donnees <- dirname(un_fichier_du_dossier)
+
+# 🌊 Groupes taxonomiques
+zoo <- c("Calanoida", "Ciliophora", "Oithona similis", "Protoperidinium",
+         "Strombidiidae sp.", "Tintinnidiidae", "nauplii")
+
+phyto <- c("Acantharia", "Bacillariophyceae", "Bacteriastrum", "Chaetoceros",
+           "Chaetoceros curvisetus", "Chaetoceros danicus", "Chaetoceros diversus",
+           "Chaetoceros peruvianus", "Chaetoceros tortissimus", "Chaetocerotales",
+           "Coscinodiscus", "Dictyocha", "Guinardia", "Leptocylindrus", "Licmophora",
+           "Nitzschia", "Pleurosigma", "Pseudo-nitzschia", "Skeletonema",
+           "Striatella", "Thalassionema nitzschioides", "scripsiella",
+           "multiple organisms", "othertocheck", "Neoceratium furca", "Neoceratium fusus")
+
+non_vivant <- c("aggregates", "badfocus", "bubble", "dark", "detritus", "fiber",
+                "light", "part", "pollen", "transparent", "nauplii-molt")
+
+# 🧠 Fonction de catégorisation
+categorize_taxon <- function(taxon) {
+  if (taxon %in% zoo) return("Zooplancton")
+  if (taxon %in% phyto) return("Phytoplancton")
+  if (taxon %in% non_vivant) return("Non-vivant")
+  return(NA)
+}
+
+# 📥 Lecture des fichiers Excel
+fichiers <- list.files(dossier_donnees, pattern = "\\.xlsx$", full.names = TRUE)
+fichiers <- fichiers[!grepl("^~\\$", basename(fichiers))]  # ignore fichiers temporaires
+
+resultats <- data.frame()
+
+# 🔁 Boucle sur les fichiers
+for (f in fichiers) {
+  nom <- basename(f)
+  lieu <- str_extract(nom, "^[^_]+")
+  date_str <- str_extract(nom, "\\d{2}\\d{2}\\d{4}")
+  date <- dmy(date_str)
+  
+  df <- read_excel(f)
+  
+  df <- df %>%
+    mutate(Moyenne = rowMeans(select(., starts_with("Triplicat_")), na.rm = TRUE)) %>%
+    select(Taxonomie, Moyenne)
+  
+  df$Categorie <- sapply(df$Taxonomie, categorize_taxon)
+  df <- df %>% filter(!is.na(Categorie))
+  
+  somme_cat <- df %>%
+    group_by(Categorie) %>%
+    summarise(Total = sum(Moyenne), .groups = "drop") %>%
+    complete(Categorie = c("Phytoplancton", "Zooplancton", "Non-vivant"), fill = list(Total = 0)) %>%
+    mutate(Fraction = Total / sum(Total),
+           Date = date,
+           Lieu = lieu)
+  
+  resultats <- bind_rows(resultats, somme_cat)
+}
+
+# 🧹 Mise en forme pour le graphique
+resultats <- resultats %>%
+  mutate(Date = as.Date(Date),
+         Date_Lieu = paste0(format(Date, "%Y-%m-%d"), "\n", Lieu))
+
+# 🧹 Créer une variable combinée Lieu + Date pour regrouper par lieu
+resultats <- resultats %>%
+  mutate(Prelevement = interaction(Lieu, Date, drop = TRUE),
+         Prelevement = factor(Prelevement, levels = unique(Prelevement[order(Lieu, Date)])))
+
+# 📊 GRAPHIQUE : Barres empilées regroupées par Lieu
+ggplot(resultats, aes(x = format(Date, "%Y-%m-%d"), y = Fraction, fill = Categorie)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~Lieu, scales = "free_x") +
+  scale_fill_manual(values = c("Phytoplancton" = "forestgreen",
+                               "Zooplancton" = "steelblue",
+                               "Non-vivant" = "grey60")) +
+  scale_y_continuous(labels = scales::label_percent(accuracy = 1)) +
+  labs(title = "Fraction relative des groupes par lieu",
+       x = "Date", y = "Fraction (%)", fill = "Catégorie") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 📊 Extraire les données de phytoplancton uniquement
+phyto_data <- resultats %>%
+  filter(Categorie == "Phytoplancton") %>%
+  mutate(Date_num = as.numeric(Date))  # pour la régression
+
+# 📈 1. Régression linéaire : évolution temporelle
+modele_temps <- lm(Fraction ~ Date_num, data = phyto_data)
+summary(modele_temps)
+
+# 📊 2. ANOVA : comparaison entre lieux
+anova_lieu <- aov(Fraction ~ Lieu, data = phyto_data)
+summary(anova_lieu)
+
+# 📉 3. Modèle avec interaction temps × lieu
+modele_interaction <- lm(Fraction ~ Date_num * Lieu, data = phyto_data)
+summary(modele_interaction)
+
+
+# 📊 EXTRAIRE les données de phytoplancton
+phyto_data <- resultats %>%
+  filter(Categorie == "Phytoplancton") %>%
+  mutate(Date = as.Date(Date),
+         Date_num = as.numeric(Date))  # Pour la régression
+
+# 📈 1. Régression temporelle
+modele_temps <- lm(Fraction ~ Date_num, data = phyto_data)
+cat("📉 Régression temporelle (tous lieux confondus) :\n")
+print(summary(modele_temps))
+
+# 📊 2. ANOVA entre lieux
+anova_lieu <- aov(Fraction ~ Lieu, data = phyto_data)
+cat("\n🏞️ Comparaison entre lieux (ANOVA) :\n")
+print(summary(anova_lieu))
+
+# 📊 3. Interaction temps * lieu
+modele_interaction <- lm(Fraction ~ Date_num * Lieu, data = phyto_data)
+cat("\n🔄 Modèle avec interaction temps * lieu :\n")
+print(summary(modele_interaction))
+
+# 📉 VISUALISATION : régression linéaire par lieu
+library(ggplot2)
+
+ggplot(phyto_data, aes(x = Date, y = Fraction, color = Lieu)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = TRUE, formula = y ~ x, linetype = "solid") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(title = "Tendance du phytoplancton au cours du temps",
+       x = "Date", y = "Fraction de phytoplancton (%)", color = "Lieu") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Extraire les données pour le zooplancton
+zoo_data <- resultats %>%
+  filter(Categorie == "Zooplancton") %>%
+  mutate(Date = as.Date(Date),
+         Date_num = as.numeric(Date))  # conversion pour la régression
+
+# Régression linéaire simple (fraction ~ temps)
+modele_zoo <- lm(Fraction ~ Date_num, data = zoo_data)
+cat("📉 Régression temporelle pour le Zooplancton :\n")
+print(summary(modele_zoo))
+
+# ANOVA pour comparer entre lieux
+anova_zoo <- aov(Fraction ~ Lieu, data = zoo_data)
+cat("\n🏞️ Comparaison des fractions de zooplancton entre lieux :\n")
+print(summary(anova_zoo))
+
+# Modèle avec interaction temps * lieu
+modele_interaction_zoo <- lm(Fraction ~ Date_num * Lieu, data = zoo_data)
+cat("\n🔄 Modèle avec interaction temps * lieu (Zooplancton) :\n")
+print(summary(modele_interaction_zoo))
+
+# Optionnel : visualiser la tendance par lieu
+library(ggplot2)
+ggplot(zoo_data, aes(x = Date, y = Fraction, color = Lieu)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(title = "Évolution de la fraction de Zooplancton au cours du temps",
+       x = "Date", y = "Fraction de Zooplancton (%)", color = "Lieu") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
