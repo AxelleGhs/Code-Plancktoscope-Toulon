@@ -1,0 +1,72 @@
+#1
+#Dénombrement
+#Premier script de la série pour obtenir les graphgiques suites à une manipulation de planktoscope + ecotaxa
+#Ce script prend en entrée le fichier TSV obtenu à partir d'ecotaxa et rend en sortie un fichier Excel contenant pour chaque Tripliquat le nombre d'individus par taxon (vivant et non-vivant)
+#IMPORTANT : ne pas run le script en une seule fois mais, au contraire, run ligne après ligne car à la 48ème ligne il est demandé de donné le nom du fichier
+#Le nom du fichier doit être PR ou GR ou PortToulon + _ + JJMMAAAA : exemple : PR_24042025
+
+
+# Packages nécessaires
+library(readr)
+library(writexl)
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+# Lire le fichier TSV
+file_path <- file.choose()  # ou spécifier un chemin
+df <- read_tsv(file_path, show_col_types = FALSE)
+
+# 🔍 Filtrer uniquement les annotations "validated"
+df_validated <- df %>%
+  filter(object_annotation_status == "validated")
+
+# Nettoyage et extraction des champs utiles
+df_clean <- df_validated %>%
+  mutate(
+    Taxonomie = sub("<.*", "", object_annotation_category),
+    Triplicat = as.integer(str_extract(acq_id, "(?<=triplicat_)[0-9]+(?=_sur)"))
+  ) %>%
+  select(Taxonomie, Triplicat)
+
+# Comptage par taxonomie et triplicat
+df_counts <- df_clean %>%
+  group_by(Taxonomie, Triplicat) %>%
+  summarise(Nombre = n(), .groups = "drop") %>%
+  pivot_wider(
+    names_from = Triplicat,
+    values_from = Nombre,
+    names_prefix = "Triplicat_",
+    values_fill = list(Nombre = 0)
+  )
+
+# Ajouter les triplicats manquants (1 à 3)
+for (i in 1:3) {
+  col_name <- paste0("Triplicat_", i)
+  if (!(col_name %in% colnames(df_counts))) {
+    df_counts[[col_name]] <- 0
+  }
+}
+
+# Réorganiser les colonnes
+df_counts <- df_counts %>%
+  select(Taxonomie, Triplicat_1, Triplicat_2, Triplicat_3)
+
+# 🔽 Demander le nom du fichier de sortie
+output_file <- readline(prompt = "Entrez le nom du fichier de sortie (avec .xlsx) : ")
+
+# Vérifier l'extension
+if (!grepl("\\.xlsx$", output_file)) {
+  output_file <- paste0(output_file, ".xlsx")
+}
+
+# Exporter le résultat
+write_xlsx(df_counts, output_file)
+
+# 🔍 Résumé
+cat("\nRésumé de l'analyse :\n")
+cat("----------------------\n")
+cat("Nombre total de taxons différents :", nrow(df_counts), "\n")
+cat("Nombre total d'observations (validées) :", sum(df_counts$Triplicat_1 + df_counts$Triplicat_2 + df_counts$Triplicat_3), "\n")
+cat("Fichier exporté :", output_file, "\n")
+
