@@ -1,6 +1,6 @@
 #1
 #Dénombrement
-#Premier script de la série pour obtenir les graphgiques suites à une manipulation de planktoscope + ecotaxa
+#Premier script de la série pour obtenir les graphgiques suite à une manipulation de planktoscope + ecotaxa
 #Ce script prend en entrée le fichier TSV obtenu à partir d'ecotaxa et rend en sortie un fichier Excel contenant pour chaque Tripliquat le nombre d'individus par taxon (vivant et non-vivant)
 #IMPORTANT : ne pas run le script en une seule fois mais, au contraire, run ligne après ligne car à la 48ème ligne il est demandé de donné le nom du fichier
 #Le nom du fichier doit être PR ou GR ou PortToulon + _ + JJMMAAAA : exemple : PR_24042025
