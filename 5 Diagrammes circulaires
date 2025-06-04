@@ -1,0 +1,113 @@
+# 5 
+# Diagrammes circulaires
+#Ce script prend en entrée un dossier d'un ou plusieurs fichiers excel contenant les dénombrements de plusieurs échantillons et rend pour chacun un diagramme circulaire qui ùontre la composition des grandes classes : Diatomée, Copepode, Rhizaria, Cilié, non-viant, Autre, Autre (Silicoflagellé) et Dinoflagellé 
+#A noetr : la liste des taxons n'est pas du tout exhaustive et peut être modifiée en ajoutant des taxons à la suite de la liste "Taxon" tout en ajoutant leur classe dans la liste "Groupe"
+
+# 📦 Chargement des bibliothèques
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+# === TABLE DE CORRESPONDANCE TAXON → GROUPE ===
+
+correspondance <- data.frame(
+  Taxon = c(
+    "Acantharia", "Bacillariophyceae", "Bacteriastrum", "Calanoida",
+    "Chaetoceros", "Chaetoceros curvisetus", "Chaetoceros danicus",
+    "Chaetoceros diversus", "Chaetoceros peruvianus", "Chaetoceros tortissimus",
+    "Chaetocerotales", "Ciliophora", "Coscinodiscus", "Dictyocha", "Guinardia",
+    "Leptocylindrus", "Licmophora", "Neoceratium furca", "Neoceratium fusus",
+    "Nitzschia", "Oithona similis", "Pleurosigma", "Protoperidinium",
+    "Pseudo-nitzschia", "Skeletonema", "Striatella", "Strombidiidae sp.",
+    "Thalassionema nitzschioides", "Tintinnidiidae", "aggregates", "badfocus",
+    "bubble", "dark", "detritus", "fiber", "light", "multiple organisms",
+    "nauplii", "nauplii-molt", "othertocheck", "part", "pollen", "scripsiella",
+    "transparent"
+  ),
+  Groupe = c(
+    "Rhizaria", "Diatomée", "Diatomée", "Copepode",
+    "Diatomée", "Diatomée", "Diatomée",
+    "Diatomée", "Diatomée", "Diatomée",
+    "Diatomée", "Cilié", "Diatomée", "Autre (Silicoflagellé)", "Diatomée",
+    "Diatomée", "Diatomée", "Dinoflagellé", "Dinoflagellé",
+    "Diatomée", "Copepode", "Diatomée", "Dinoflagellé",
+    "Diatomée", "Diatomée", "Diatomée", "Cilié",
+    "Diatomée", "Cilié", "Non-vivant", "Non-vivant",
+    "Non-vivant", "Non-vivant", "Non-vivant", "Non-vivant", "Non-vivant", "Autre",
+    "Copepode", "Non-vivant", "Autre", "Non-vivant", "Non-vivant", "Dinoflagellé",
+    "Non-vivant"
+  ),
+  stringsAsFactors = FALSE
+)
+
+# === COULEURS FIXES PAR GROUPE ===
+palette_groupes <- c(
+  "Diatomée" = "#1f78b4",
+  "Copepode" = "#33a02c",
+  "Dinoflagellé" = "#e31a1c",
+  "Cilié" = "#ff7f00",
+  "Rhizaria" = "#6a3d9a",
+  "Autre (Silicoflagellé)" = "#b15928",
+  "Autre" = "#b2df8a",
+  "Non-vivant" = "grey50"
+)
+
+# === SELECTION DU DOSSIER ===
+dossier <- dirname(file.choose())  # Choix d’un fichier pour obtenir le dossier
+fichiers <- list.files(dossier, pattern = "\\.xlsx$", full.names = TRUE)
+
+# === CREATION DOSSIER DE SORTIE ===
+dir.create(file.path(dossier, "camemberts_groupes"), showWarnings = FALSE)
+
+# === TRAITEMENT DE CHAQUE FICHIER ===
+for (fichier in fichiers) {
+  nom_fichier <- basename(fichier)
+  lieu_date <- tools::file_path_sans_ext(nom_fichier)
+  
+  # Extraction du lieu et de la date
+  split <- unlist(strsplit(lieu_date, "_"))
+  if (length(split) != 2) next  # format invalide
+  site <- split[1]
+  date <- split[2]
+  
+  # Lecture
+  donnees <- tryCatch(read_excel(fichier), error = function(e) return(NULL))
+  if (is.null(donnees)) next
+  
+  if (ncol(donnees) < 4) next  # fichier mal formé
+  colnames(donnees)[1:4] <- c("Taxon", "Rep1", "Rep2", "Rep3")
+  
+  # Moyenne des triplicats
+  donnees <- donnees %>%
+    mutate(Moyenne = rowMeans(across(c(Rep1, Rep2, Rep3)), na.rm = TRUE))
+  
+  # Ajout du groupe
+  donnees <- left_join(donnees, correspondance, by = "Taxon") %>%
+    mutate(Groupe = ifelse(is.na(Groupe), "Inconnu", Groupe))
+  
+  # Agrégation par groupe
+  groupes <- donnees %>%
+    group_by(Groupe) %>%
+    summarise(Abondance = sum(Moyenne, na.rm = TRUE)) %>%
+    filter(Abondance > 0)
+  
+  # Création du camembert
+  plot <- ggplot(groupes, aes(x = "", y = Abondance, fill = Groupe)) +
+    geom_col(width = 1, color = "white") +
+    coord_polar(theta = "y") +
+    scale_fill_manual(values = palette_groupes, drop = FALSE) +
+    theme_void() +
+    labs(title = paste("Répartition des groupes -", nom_fichier))
+  
+  # Export
+  ggsave(
+    filename = file.path(dossier, "camemberts_groupes", paste0(lieu_date, ".png")),
+    plot = plot, width = 6, height = 6
+  )
+}
