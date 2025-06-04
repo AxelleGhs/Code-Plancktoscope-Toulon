@@ -1,0 +1,125 @@
+#3
+#Abondance
+#Calcul de l'abondance à partir d'un dossier d'un ou plusieurs fichiers Excel obetnu à partir du script Dénombrement et du fichier métadonnées obtenu à partir du script Métadonnées contenant les données des fichiers TSV utilisés pour le dénombrement
+#Toujours mettre les fichier ensemble dans un seul dossier pour que cela soit rapide
+#A la sortie on obtient un fichier excel avec toutes les abondances totales.
+#L'abondance est calculée à partir de la formule du script de Adelaide perruchon que l'on peut retrouver ici --> https://github.com/pkostyrka/pkscoperoutine 
+
+
+
+# 📦 Chargement des bibliothèques
+library(readxl)
+library(writexl)
+library(dplyr)
+library(stringr)
+
+# 📁 Sélection d’un fichier du dossier contenant les fichiers Excel
+un_fichier_du_dossier <- file.choose()
+dossier_donnees <- dirname(un_fichier_du_dossier)
+
+# 📄 Sélection du fichier de métadonnées
+fichier_metadonnees <- file.choose()
+
+# 📥 Lecture du fichier de métadonnées
+metadonnees <- read_excel(fichier_metadonnees)
+metadonnees$object_date <- as.Date(metadonnees$object_date)
+
+# ❌ Liste des taxons à exclure
+taxons_exclus <- c(
+  "aggregates", "badfocus", "bubble", "dark", "detritus", "fiber", "light",
+  "nauplii-molt", "part", "pollen", "transparent"
+)
+
+# 🗃 Initialisation du tableau final
+resultats <- data.frame(Date = character(), Abondance_totale = numeric(), Fichier = character(), stringsAsFactors = FALSE)
+
+# 🔁 Liste et traitement de tous les fichiers Excel du dossier
+fichiers <- list.files(path = dossier_donnees, pattern = "\\.xlsx$", full.names = TRUE)
+
+# 🔁 Dictionnaire de correspondance nom → sample_project
+site_map <- list(
+  "GR" = "Etude_GrandeRade",
+  "PR" = "Etude_PetiteRade",
+  "PortToulon" = "Etude_PortToulon"
+)
+
+for (fichier in fichiers) {
+  
+  nom_fichier <- basename(fichier)
+  
+  # 🎯 Extraction de la date (JJMMAAAA) et conversion en format Date
+  date_texte <- str_extract(nom_fichier, "(?<=_)\\d{8}")
+  if (is.na(date_texte)) {
+    warning(paste("❌ Date non détectée dans le fichier :", nom_fichier))
+    next
+  }
+  date_formatee <- paste0(substr(date_texte, 1, 2), "/", substr(date_texte, 3, 4), "/", substr(date_texte, 5, 8))
+  date_r <- as.Date(date_formatee, format = "%d/%m/%Y")
+  
+  # 🏷 Identifier le site en prenant tout ce qui est avant le "_"
+  site_nom <- str_extract(nom_fichier, "^[^_]+")  # ex: "GR", "PR", "PortToulon"
+  if (!(site_nom %in% names(site_map))) {
+    warning(paste("❌ Code site inconnu :", site_nom, "dans le fichier :", nom_fichier))
+    next
+  }
+  sample_project <- site_map[[site_nom]]
+  
+  # 🔍 Filtrer les métadonnées correspondant à la date et au site
+  ligne_meta <- metadonnees %>%
+    filter(object_date == date_r, sample_project == sample_project)
+  
+  if (nrow(ligne_meta) == 0) {
+    warning(paste("⚠️ Aucune métadonnée pour", sample_project, "à la date", date_r, "→ fichier ignoré :", nom_fichier))
+    next
+  }
+  if (nrow(ligne_meta) > 1) {
+    warning(paste("⚠️ Plusieurs entrées pour", sample_project, "à la date", date_r, "→ première utilisée."))
+    ligne_meta <- ligne_meta[1, ]
+  }
+  
+  # 📊 Lecture des données
+  donnees <- read_excel(fichier)
+  if (nrow(donnees) == 0) {
+    warning(paste("⚠️ Fichier vide :", nom_fichier))
+    next
+  }
+  
+  # 🧮 Calcul des moyennes des triplicats (col 2 à 4)
+  donnees$Moyenne <- rowMeans(donnees[, 2:4], na.rm = TRUE)
+  
+  # 🔢 Calcul du coefficient avec les colonnes fournies
+  Vtot  <- ligne_meta$Prelevement_total_volume_m3
+  Vconc <- ligne_meta$Prelevement_concentrated_volume_m3
+  Fdil  <- ligne_meta$sample_dilution_factor
+  Vima  <- ligne_meta$acq_imaged_volume_m3
+  
+  coefficient <- Vconc /( Fdil * Vima * Vtot)
+  
+  # 📈 Calcul des abondances ligne par ligne
+  donnees$Abondance <- donnees$Moyenne * coefficient
+  
+  # 🚫 Suppression des taxons à exclure
+  donnees_filtrees <- donnees %>% filter(!(donnees[[1]] %in% taxons_exclus))
+  
+  # ➕ Somme des abondances restantes
+  abondance_totale <- sum(donnees_filtrees$Abondance, na.rm = TRUE)
+  
+  # 📝 Enregistrement du résultat avec nom du fichier
+  resultats <- rbind(
+    resultats,
+    data.frame(
+      Date = format(date_r, "%d/%m/%Y"),
+      Abondance_totale = abondance_totale,
+      Fichier = nom_fichier
+    )
+  )
+  
+  message("✅ Fichier traité :", nom_fichier, " | Abondance totale :", round(abondance_totale, 2))
+}
+
+# 💾 Export du fichier final
+fichier_sortie <- file.path(dossier_donnees, "Abondance_totale_resultats.xlsx")
+write_xlsx(resultats, fichier_sortie)
+
+cat("\n🎉 Résultats enregistrés avec succès dans :", fichier_sortie, "\n")
+
