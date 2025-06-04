@@ -1,0 +1,61 @@
+#2
+#Métadonnées
+#Ce script prend en entrée un ou plusieurs fichiers TSV obtenu à partir d'ecotaxa et rend en sortie un fichier excel avec des métadonnées importantes pour les calculs d'abondance (différents volumes utilisés)
+
+library(readr)
+library(dplyr)
+library(writexl)
+
+# 📁 Étape 1 : Sélection d’un fichier pour identifier le dossier
+message("Veuillez sélectionner un fichier TSV quelconque dans le dossier contenant tous les fichiers.")
+un_fichier_du_dossier <- file.choose()
+dossier_donnees <- dirname(un_fichier_du_dossier)
+
+# 📄 Étape 2 : Lister tous les fichiers TSV dans ce dossier
+fichiers <- list.files(path = dossier_donnees, pattern = "\\.tsv$", full.names = TRUE)
+
+# 🏷️ Colonnes d’intérêt
+colonnes_cibles <- c(
+  "sample_project",
+  "object_date",
+  "sample_concentrated_sample_volume",
+  "sample_total_volume",
+  "sample_dilution_factor",
+  "acq_imaged_volume"
+)
+
+# 📦 Étape 3 : Initialiser une liste pour stocker les métadonnées
+liste_metadonnees <- list()
+
+# 🔁 Étape 4 : Boucle sur chaque fichier
+for (fichier in fichiers) {
+  # Lire seulement la première ligne de données
+  donnees <- read_tsv(fichier, n_max = 1, show_col_types = FALSE)
+  
+  # Vérifier si toutes les colonnes nécessaires sont présentes
+  if (!all(colonnes_cibles %in% colnames(donnees))) {
+    warning(paste("⚠️ Colonnes manquantes dans :", basename(fichier)))
+    next
+  }
+  
+  # Extraire les colonnes + ajouter calculs
+  meta <- donnees %>%
+    select(all_of(colonnes_cibles)) %>%
+    mutate(
+      Prelevement_total_volume_m3 = sample_total_volume / 1000,
+      Prelevement_concentrated_volume_m3 = sample_concentrated_sample_volume / 1e6,
+      acq_imaged_volume_m3 = acq_imaged_volume / 1e6
+    )
+  
+  # Ajouter à la liste
+  liste_metadonnees[[basename(fichier)]] <- meta
+}
+
+# 🧾 Étape 5 : Fusionner toutes les lignes
+donnees_finales <- bind_rows(liste_metadonnees)
+
+# 💾 Étape 6 : Exporter vers Excel
+fichier_sortie <- file.path(dossier_donnees, "Métadonnées.xlsx")
+write_xlsx(donnees_finales, path = fichier_sortie)
+
+message("✅ Fichier 'Métadonnées.xlsx' créé avec succès dans : ", dossier_donnees)
