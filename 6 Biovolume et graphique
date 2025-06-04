@@ -2,7 +2,7 @@
 #Biovolume et BV compo/size class
 #Ce script prend en entrée un dossier d'un ou plusieur fichiers TSV issu d'ecoaxa et rend plusieurs choses : un fichier CSV pour cahque prélèvement avec toutes les colonnes transformées (BV, ESD, metadata, classes de taille, etc.), un graphique de la composition en BV de chaque classe de taille et les groupes fonctionnels qui sont liés.  
 #A noter (1) : ESDµm = Equivalent Spherical Diameter, c’est le diamètre d’une sphère ayant le même volume que l’objet observé
-#A noter (2): les formules de biovolume etc sont en partie issu de celles d'Adelaïde Perruchon et on peut les retruver ici --> https://github.com/pkostyrka/pkscoperoutine 
+#A noter (2): les formules de biovolume etc sont en partie issu de celles de "pkscoperoutine" et on peut les retruver ici --> https://github.com/pkostyrka/pkscoperoutine 
 #A noter (3) : Pour les caclules de biovolumes on utilise ici le BV_riddled,  c’est une estimation sphérique à partir de la surface exclue (riddled area,surface réelle de l’objet) – plus précise quand les objets sont percés ou ajourés.
 
 
