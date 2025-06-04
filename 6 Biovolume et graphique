@@ -1,0 +1,269 @@
+#6 
+#Biovolume et BV compo/size class
+#Ce script prend en entrée un dossier d'un ou plusieur fichiers TSV issu d'ecoaxa et rend plusieurs choses : un fichier CSV pour cahque prélèvement avec toutes les colonnes transformées (BV, ESD, metadata, classes de taille, etc.), un graphique de la composition en BV de chaque classe de taille et les groupes fonctionnels qui sont liés.  
+#A noter (1) : ESDµm = Equivalent Spherical Diameter, c’est le diamètre d’une sphère ayant le même volume que l’objet observé
+#A noter (2): les formules de biovolume etc sont en partie issu de celles d'Adelaïde Perruchon et on peut les retruver ici --> https://github.com/pkostyrka/pkscoperoutine 
+#A noter (3) : Pour les caclules de biovolumes on utilise ici le BV_riddled,  c’est une estimation sphérique à partir de la surface exclue (riddled area,surface réelle de l’objet) – plus précise quand les objets sont percés ou ajourés.
+
+
+library(tidyverse)
+library(readr)
+
+# Fonction bv_to_esdum 
+bv_to_esdum <- function(x) {
+  2 * ((3 / (4 * pi)) * x)^(1/3) * 1000
+}
+
+# Fonction compute_bv (avec suppression des Non-vivants dans le graphique)
+compute_bv <- function(path, output, metadata=NULL) {
+  options(dplyr.summarise.inform = FALSE)
+  
+  data <- read_tsv(path, col_types = list(object_time=col_time(),
+                                          object_annotation_time=col_time())) %>%
+    group_by(object_label, acq_id) %>% mutate(ghost_id=1:n()) %>% ungroup() %>%
+    mutate(unique_id = paste(acq_id,sample_operator,ghost_id,
+                             object_date,object_time,
+                             object_lat,object_lon,sep="_")) %>%
+    mutate(sample_total_volume = ifelse("sample_total_volume" %in% colnames(.), sample_total_volume, NA),
+           sample_concentrated_sample_volume = ifelse("sample_concentrated_sample_volume" %in% colnames(.), sample_concentrated_sample_volume, NA),
+           sample_dilution_factor = ifelse("sample_dilution_factor" %in% colnames(.), sample_dilution_factor, NA)) %>%
+    mutate(sample_dilution_factor = as.numeric(gsub(",", ".",sample_dilution_factor)))
+  
+  id <- unique(data$sample_id)
+  
+  if(!is.null(metadata)) {
+    for(i in unique(data$unique_id)) {
+      meta <- metadata[metadata$unique_id==i,]
+      data[data$unique_id==i,] <- mutate(data[data$unique_id==i,],
+                                         acq_id = meta$acq_id,
+                                         ghost_id = meta$ghost_id,
+                                         object_date = meta$object_date,
+                                         object_time = meta$object_time,
+                                         object_lat = meta$object_lat,
+                                         object_lon = meta$object_lon,
+                                         sample_id = meta$sample_id,
+                                         sample_operator = meta$sample_operator,
+                                         sample_total_volume = meta$sample_total_volume,
+                                         sample_concentrated_sample_volume = meta$sample_concentrated_sample_volume,
+                                         acq_celltype = meta$acq_celltype,
+                                         acq_imaged_volume = meta$acq_imaged_volume,
+                                         process_pixel = meta$process_pixel,
+                                         sample_dilution_factor = meta$sample_dilution_factor)
+    }
+  }
+  
+  data <- mutate(data,
+                 sample_total_volume = sample_total_volume/1000,
+                 sample_concentrated_sample_volume = sample_concentrated_sample_volume/1000/1000,
+                 acq_celltype = acq_celltype/1000/1000,
+                 acq_imaged_volume = acq_imaged_volume/1000/1000,
+                 pixelsize = process_pixel/1000,
+                 percentValidated = sum(object_annotation_status=="validated", na.rm=T)/n()*100)
+  
+  metadata <- select(data,
+                     unique_id,
+                     object_date,
+                     object_time,
+                     object_lat,
+                     object_lon,
+                     acq_id,
+                     sample_id,
+                     sample_operator,
+                     sample_total_volume,
+                     sample_concentrated_sample_volume,
+                     acq_celltype,
+                     acq_imaged_volume,
+                     pixelsize,
+                     sample_dilution_factor) %>% distinct()
+  
+  for (i in unique(metadata$unique_id)){
+    if(sum(is.na(metadata[metadata$unique_id==i,]))>0) {
+      pb <- colnames(metadata[metadata$unique_id==i,])[is.na(metadata[metadata$unique_id==i,])]
+      print(paste0("Warning ! [sample : ",unique(data$sample_id),"] These metadata do not have value. Default is 1 : ",pb))
+      metadata[is.na(metadata) & metadata$unique_id==i] <- 1
+      data[pb] <- 1
+    }
+  }
+  
+  data <- mutate(data,
+                 major = object_major*pixelsize,
+                 minor = object_minor*pixelsize,
+                 area_exc = object_area_exc*(pixelsize^2),
+                 area = object_area*(pixelsize^2),
+                 area_origin = object_area,
+                 ar_elli = pi*(major/2)*(minor/2),
+                 BV_elli = (4/3)*(minor/2)*ar_elli,
+                 ESD_plain = 2*(sqrt(area/pi)),
+                 ESD_riddled = 2*(sqrt(area_exc/pi)),
+                 R3_riddled = (ESD_riddled/2)^3,
+                 R3_plain = (ESD_plain/2)^3,
+                 BV_riddled = (4/3)*pi*R3_riddled,
+                 BV_plain = (4/3)*pi*R3_plain,
+                 AB = 1,
+                 conver.uniqueID = sample_concentrated_sample_volume/
+                   (acq_imaged_volume*sample_total_volume*sample_dilution_factor))
+  
+  vimgsample <- data %>% select(sample_id, unique_id, acq_imaged_volume) %>% distinct() %>%
+    group_by(sample_id) %>% summarize(sample_imaged_volume=sum(acq_imaged_volume, na.rm=T))
+  
+  data <- merge(data, vimgsample, "sample_id", all.x=T)
+  
+  data <- mutate(data,
+                 conver.sample = sample_concentrated_sample_volume/
+                   (sample_imaged_volume*sample_total_volume*sample_dilution_factor))
+  
+  smin = 1e-12
+  smax = 1e4
+  k = 2^(1/8)
+  
+  nb <- ceiling(log(smax/smin, base=k))
+  x <- smin*k^(1:nb)
+  x1 <- c(0,diff(x))
+  
+  class.f <- function(y){
+    a <- x[x <= y][which.min(abs(x[x <= y] - y))]
+    b <- x[x > y][which.min(abs(x[x > y] - y))]
+    id <- match(b, x)
+    norm <- x1[id]
+    data.frame(size_class.min=a,
+               size_class.max=b,
+               size_class.id=id,
+               size_class.norm=norm)
+  }
+  
+  classes <- sapply(data$BV_plain, class.f) %>% t %>% as.data.frame %>% sapply(as.numeric)
+  colnames(classes) <- paste0(colnames(classes),"_plain")
+  data <- cbind(data, classes)
+  
+  classes <- sapply(data$BV_riddled, class.f) %>% t %>% as.data.frame %>% sapply(as.numeric)
+  colnames(classes) <- paste0(colnames(classes),"_riddled")
+  data <- cbind(data, classes)
+  
+  classes <- sapply(data$BV_elli, class.f) %>% t %>% as.data.frame %>% sapply(as.numeric)
+  colnames(classes) <- paste0(colnames(classes),"_elli")
+  data <- cbind(data, classes)
+  
+  write_csv2(data, paste0(file.path(output,id),".csv"))
+  
+  print(paste0("done : ",unique(data$sample_id)))
+  
+  options(dplyr.summarise.inform = TRUE)
+  
+  return(data)
+}
+
+# Palette de couleurs fixes pour chaque niveau trophique
+couleurs_trophiques <- c(
+  "Phototrophes" = "#66c2a5",
+  "Mixotrophes" = "#fc8d62",
+  "Prédateurs"   = "#8da0cb",
+  "Brouteurs"    = "#a6d854",
+  "Inconnu"      = "#e78ac3"
+)
+# Dictionnaire taxon → niveau trophique (inchangé)
+trophic_levels <- tribble(
+  ~Taxon, ~Trophic,
+  "Acantharia", "Mixotrophes",
+  "Bacillariophyceae", "Phototrophes",
+  "Bacteriastrum", "Phototrophes",
+  "Calanoida", "Prédateurs",
+  "Chaetoceros", "Phototrophes",
+  "Chaetoceros curvisetus", "Phototrophes",
+  "Chaetoceros danicus", "Phototrophes",
+  "Chaetoceros diversus", "Phototrophes",
+  "Chaetoceros peruvianus", "Phototrophes",
+  "Chaetoceros tortissimus", "Phototrophes",
+  "Chaetocerotales", "Phototrophes",
+  "Ciliophora", "Prédateurs",
+  "Coscinodiscus", "Phototrophes",
+  "Dictyocha", "Phototrophes",
+  "Guinardia", "Phototrophes",
+  "Leptocylindrus", "Phototrophes",
+  "Licmophora", "Phototrophes",
+  "Neoceratium furca", "Mixotrophes",
+  "Neoceratium fusus", "Mixotrophes",
+  "Nitzschia", "Phototrophes",
+  "Oithona similis", "Prédateurs",
+  "Pleurosigma", "Phototrophes",
+  "Protoperidinium", "Mixotrophes",
+  "Pseudo-nitzschia", "Phototrophes",
+  "Skeletonema", "Phototrophes",
+  "Striatella", "Phototrophes",
+  "Strombidiidae sp.", "Prédateurs",
+  "Thalassionema nitzschioides", "Phototrophes",
+  "Tintinnidiidae", "Prédateurs",
+  "scripsiella", "Mixotrophes",
+  "multiple organisms", "Inconnu",
+  "othertocheck", "Inconnu",
+  "nauplii", "Brouteurs",
+  "aggregates", "Non-vivant",
+  "badfocus", "Non-vivant",
+  "bubble", "Non-vivant",
+  "dark", "Non-vivant",
+  "detritus", "Non-vivant",
+  "fiber", "Non-vivant",
+  "light", "Non-vivant",
+  "nauplii-molt", "Non-vivant",
+  "part", "Non-vivant",
+  "pollen", "Non-vivant",
+  "transparent", "Non-vivant"
+)
+
+# --- Étape 1 : Choisir un fichier .tsv pour définir dossier ---
+un_fichier_du_dossier <- file.choose()
+dossier_donnees <- dirname(un_fichier_du_dossier)
+dossier_sortie <- file.path(dossier_donnees, "bv_computes")
+dir.create(dossier_sortie, showWarnings = FALSE)
+
+# --- Étape 2 : Traiter fichier par fichier et faire un graphique par fichier ---
+fichiers <- list.files(dossier_donnees, pattern = "\\.tsv$", full.names = TRUE)
+
+for (f in fichiers) {
+  
+  data <- compute_bv(f, dossier_sortie)
+  
+  # Extraction taxon principal (avant le "<")
+  data <- data %>%
+    mutate(Taxon = str_extract(object_annotation_category, "^[^<]+"))
+  
+  # Associer niveaux trophiques
+  data <- left_join(data, trophic_levels, by = "Taxon") %>%
+    mutate(Trophic = ifelse(is.na(Trophic), "Inconnu", Trophic))
+  
+  # Calcul BV corrigé
+  data <- data %>%
+    mutate(BV = BV_riddled * conver.sample)
+  
+  # Filtrer Non-vivant
+  data <- data %>%
+    filter(Trophic != "Non-vivant")
+  
+  # Préparation des classes de taille pour le graphique
+  data <- data %>%
+    rename(Taille_max = size_class.max_riddled,
+           class_id = size_class.id_riddled)
+  
+  # Regroupement + calcul pour graphique
+  plot_data <- data %>%
+    group_by(Trophic, Taille_max, class_id) %>%
+    summarise(BV = sum(BV, na.rm = TRUE), .groups = "drop") %>%
+    group_by(class_id) %>%
+    mutate(per = BV / sum(BV, na.rm = TRUE) * 100) %>%
+    ungroup() %>%
+    mutate(esd_um = bv_to_esdum(Taille_max))
+  
+  # Tracer le graphique avec axe X entre 0 et 300 µm (log10 impossible à zéro)
+  p <- ggplot(plot_data, aes(x = esd_um, y = per, fill = Trophic)) +
+    geom_col(width = 1.2) +
+    scale_fill_manual(values = couleurs_trophiques) +
+    ylab("Biovolume (%)") +
+    xlab("Taille (µm)") +
+    coord_cartesian(xlim = c(0, 400)) +
+    theme_minimal()
+  
+  # Sauvegarde plot
+  nom_fichier_plot <- paste0(dossier_sortie, "/", tools::file_path_sans_ext(basename(f)), "_bv_plot.png")
+  ggsave(nom_fichier_plot, plot = p, width = 10, height = 6)
+  
+  print(paste("Graphique sauvegardé :", nom_fichier_plot))
+}
