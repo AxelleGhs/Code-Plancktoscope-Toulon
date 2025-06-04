@@ -3,7 +3,7 @@
 #Calcul de l'abondance à partir d'un dossier d'un ou plusieurs fichiers Excel obetnu à partir du script Dénombrement et du fichier métadonnées obtenu à partir du script Métadonnées contenant les données des fichiers TSV utilisés pour le dénombrement
 #Toujours mettre les fichier ensemble dans un seul dossier pour que cela soit rapide
 #A la sortie on obtient un fichier excel avec toutes les abondances totales.
-#L'abondance est calculée à partir de la formule du script de Adelaide perruchon que l'on peut retrouver ici --> https://github.com/pkostyrka/pkscoperoutine 
+#L'abondance est calculée à partir de la formule du script de "pkscoperoutine" que l'on peut retrouver ici --> https://github.com/pkostyrka/pkscoperoutine 
 
 
 
