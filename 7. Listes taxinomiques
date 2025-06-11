@@ -1,0 +1,98 @@
+#7
+#Listes Taxonomiques 
+#Prend en entrée un dossier de fichiers de Dénombrement Excel
+#Rend en sortie un fichier excel avec une liste des taxons communs aux 2 rades, une liste des taxons exclusifs à la GR et une liste de taxons exclusifs à la PR.
+#Le nom des fichiers est déjà formaté par le script Dénombrement mais dans tous les cas il doit être le suivant : GR_JJMMAAA ou PR_JJMMAAAA
+#Dans le script il existe une liste de groupes à ne pas prendre en compte (les non-viants et autres) appelée taxons_a_ignorer. Dans le futur il est possible d'ajouter des groupes s'ils manquent à la litse.
+
+library(readxl)
+library(dplyr)
+library(stringr)
+library(openxlsx)
+
+# Dossier contenant les fichiers
+folder_path <-  "~/Desktop/Résultats Stage Final/Dénombrement"
+
+
+# Liste des noms de taxons à ignorer (normalisés)
+taxons_a_ignorer <- tolower(c(
+  "transparent", "pollen", "part", "nauplii-molt", "othertocheck",
+  "multiple organisms", "aggregates", "badfocus", "bubble", "dark",
+  "detritus", "fiber", "light", "fecal pellets", "ghost", "chaetoceros chain ", "aggregate",
+  "egg sac", "larvae","copepod moult"
+))
+
+# Fonction de normalisation des taxons
+normalize_taxon <- function(t) {
+  t %>%
+    str_trim() %>%
+    str_squish() %>%
+    tolower()
+}
+
+# Initialiser les listes spécifiques
+taxons_GR <- character()
+taxons_PR <- character()
+
+# Suivi séparé pour chaque rade
+vus_GR <- character()
+vus_PR <- character()
+
+# Liste des fichiers
+fichiers <- list.files(folder_path, pattern = "\\.xlsx$", full.names = TRUE)
+
+# Traitement fichier par fichier
+for (fichier in fichiers) {
+  feuille <- excel_sheets(fichier)[1]
+  
+  # Lecture et nettoyage
+  data <- read_excel(fichier, sheet = feuille, col_types = "text") %>%
+    select(Taxonomie) %>%
+    filter(!is.na(Taxonomie)) %>%
+    distinct() %>%
+    mutate(Taxonomie = normalize_taxon(Taxonomie)) %>%
+    filter(!(Taxonomie %in% taxons_a_ignorer))
+  
+  noms_taxons <- data$Taxonomie
+  nom_fichier <- basename(fichier)
+  
+  if (grepl("^GR_", nom_fichier)) {
+    nouveaux_GR <- setdiff(noms_taxons, vus_GR)
+    taxons_GR <- union(taxons_GR, nouveaux_GR)
+    vus_GR <- union(vus_GR, noms_taxons)
+    
+  } else if (grepl("^PR_", nom_fichier)) {
+    nouveaux_PR <- setdiff(noms_taxons, vus_PR)
+    taxons_PR <- union(taxons_PR, nouveaux_PR)
+    vus_PR <- union(vus_PR, noms_taxons)
+  }
+}
+
+# Comparaison
+communs <- intersect(taxons_GR, taxons_PR)
+exclusifs_GR <- setdiff(taxons_GR, taxons_PR)
+exclusifs_PR <- setdiff(taxons_PR, taxons_GR)
+
+# 📄 Export TXT
+writeLines(sort(communs), "taxons_communs.txt")
+writeLines(sort(exclusifs_GR), "taxons_exclusifs_GR.txt")
+writeLines(sort(exclusifs_PR), "taxons_exclusifs_PR.txt")
+
+# 📊 Export XLSX
+wb <- createWorkbook()
+addWorksheet(wb, "Taxons communs")
+addWorksheet(wb, "Exclusifs GR")
+addWorksheet(wb, "Exclusifs PR")
+
+writeData(wb, "Taxons communs", data.frame(Taxon = sort(communs)))
+writeData(wb, "Exclusifs GR", data.frame(Taxon = sort(exclusifs_GR)))
+writeData(wb, "Exclusifs PR", data.frame(Taxon = sort(exclusifs_PR)))
+
+saveWorkbook(wb, "résumé_taxons.xlsx", overwrite = TRUE)
+
+# ✅ Résumé à l'écran
+cat("✅ Taxons en commun (", length(communs), ") :\n", paste(communs, collapse = "\n"), "\n\n")
+cat("🔷 Exclusifs GR (", length(exclusifs_GR), ") :\n", paste(exclusifs_GR, collapse = "\n"), "\n\n")
+cat("🔶 Exclusifs PR (", length(exclusifs_PR), ") :\n", paste(exclusifs_PR, collapse = "\n"), "\n\n")
+
+
