@@ -1,0 +1,118 @@
+#10
+#Diagrammes circulaires Bio-volume
+#Attention ce script est à utiliser seulment après avoir utilisé le script n°9 (Profils trophiques Biovolume-Taille)
+#Il prend en entrée un dossier de fichier CSV (issus du script n°9), par contre il faut renommer les fichier de sorte à ce qu'ils se nomment GR_JJMMAAA ou PR_JJMMAAAA
+#Il rend en sortie (dans le même fichier qu'en entrée) les diagrammes circulaires des biovolumes relatifs en fonction des grandes classes de planctons.
+
+# 📦 Packages nécessaires
+library(tidyverse)
+library(stringr)
+library(writexl)
+
+# 📁 Dossier contenant les fichiers CSV
+folder_path <- "~/Desktop/Résultats Stage Final/bv_computes/CSV"
+all_files <- list.files(folder_path, pattern = "\\.csv$", full.names = TRUE)
+
+# 🎨 Palette couleurs par Groupe
+palette_groupes <- c(
+  "Diatomée" = "#1f78b4",
+  "Copepode" = "#33a02c",
+  "Dinoflagellé" = "#e31a1c",
+  "Cilié" = "#ff7f00",
+  "Rhizaria" = "#6a3d9a",
+  "Silicoflagellé" = "#b15928",
+  "Autre" = "#b2df8a",
+  "Non-vivant" = "grey50"
+)
+
+# 📊 Table de correspondance Taxon → Groupe
+correspondance <- data.frame(
+  Taxon = c(
+    "Acantharia", "Bacillariophyceae", "Bacteriastrum", "Calanoida",
+    "Chaetoceros", "Chaetoceros curvisetus", "Chaetoceros danicus",
+    "Chaetoceros diversus", "Chaetoceros peruvianus", "Chaetoceros tortissimus",
+    "Chaetocerotales", "Ciliophora", "Coscinodiscus", "Dictyocha", "Guinardia",
+    "Leptocylindrus", "Licmophora", "Neoceratium furca", "Neoceratium fusus",
+    "Nitzschia", "Oithona similis", "Pleurosigma", "Protoperidinium",
+    "Pseudo-nitzschia", "Skeletonema", "Striatella", "Strombidiidae sp.",
+    "Thalassionema nitzschioides", "Tintinnidiidae", "aggregates", "badfocus",
+    "bubble", "dark", "detritus", "fiber", "light", "multiple organisms",
+    "nauplii", "nauplii-molt", "othertocheck", "part", "pollen", "scripsiella",
+    "transparent"
+  ),
+  Groupe = c(
+    "Rhizaria", "Diatomée", "Diatomée", "Copepode",
+    "Diatomée", "Diatomée", "Diatomée",
+    "Diatomée", "Diatomée", "Diatomée",
+    "Diatomée", "Cilié", "Diatomée", "Silicoflagellé", "Diatomée",
+    "Diatomée", "Diatomée", "Dinoflagellé", "Dinoflagellé",
+    "Diatomée", "Copepode", "Diatomée", "Dinoflagellé",
+    "Diatomée", "Diatomée", "Diatomée", "Cilié",
+    "Diatomée", "Cilié", "Non-vivant", "Non-vivant",
+    "Non-vivant", "Non-vivant", "Non-vivant", "Non-vivant", "Non-vivant", "Autre",
+    "Copepode", "Non-vivant", "Autre", "Non-vivant", "Non-vivant", "Dinoflagellé",
+    "Non-vivant"
+  ),
+  stringsAsFactors = FALSE
+)
+
+# 🧠 Fonction pour traiter un fichier (biovolumes)
+process_file <- function(file_path) {
+  # Lecture
+  df <- tryCatch(read_csv2(file_path, show_col_types = FALSE), error = function(e) return(NULL))
+  if (is.null(df) || nrow(df) == 0 || ncol(df) < 113) return(NULL)
+  
+  df <- df %>%
+    mutate(
+      Taxon = str_extract(.[[15]], "^[^<]+"),
+      Groupe = correspondance$Groupe[match(Taxon, correspondance$Taxon)],
+      BV = as.numeric(.[[113]])
+    ) %>%
+    filter(!is.na(Groupe), !is.na(BV), BV > 0)
+  
+  if (nrow(df) == 0) return(NULL)
+  
+  df_summary <- df %>%
+    group_by(Groupe) %>%
+    summarise(BV_total = sum(BV, na.rm = TRUE), .groups = "drop") %>%
+    mutate(Percent = BV_total / sum(BV_total) * 100)
+  
+  # Nom fichier pour le graphique
+  filename <- basename(file_path)
+  
+  # Tracer camembert
+  p <- ggplot(df_summary, aes(x = "", y = Percent, fill = Groupe)) +
+    geom_col(width = 1) +
+    coord_polar(theta = "y") +
+    scale_fill_manual(values = palette_groupes, drop = FALSE) +
+    labs(title = filename, fill = "Groupe") +
+    theme_void() +
+    theme(legend.position = "right")
+  
+  # Sauvegarde image
+  output_name <- paste0(tools::file_path_sans_ext(filename), "_camembert.png")
+  ggsave(file.path(dirname(file_path), output_name), plot = p, width = 6, height = 6)
+  
+  df_summary$Fichier <- filename
+  return(df_summary)
+}
+
+# 🚀 Appliquer à tous les fichiers
+results <- map_dfr(all_files, process_file)
+
+# 🧾 Extraire Zone et Date depuis le nom de fichier
+results <- results %>%
+  mutate(
+    Zone = str_sub(Fichier, 1, 2),
+    Date = as.Date(str_extract(Fichier, "\\d{8}"), format = "%d%m%Y")
+  )
+
+# 📊 Restructurer pour Excel
+summary_table <- results %>%
+  select(Zone, Date, Groupe, Percent) %>%
+  pivot_wider(names_from = Groupe, values_from = Percent, values_fill = 0) %>%
+  arrange(Zone, Date)
+
+# 💾 Export Excel
+write_xlsx(summary_table, path = "~/Desktop/Résultats Stage Final/bv_computes/CSV/summary_par_groupes1.xlsx")
+
