@@ -1,0 +1,341 @@
+#9
+#Profil trophique de la répartition du biovolume en fonction de la taille des organismes
+#Ce script prend en entrée un dossier de fichiers TSV (obtenu grâce à Ecotaxa) 
+#Il rend en sortie plusieurs choses :
+#            - un graphique/profil trophique par fichier TSV
+#            - un fichier CSV par fichier TSV, qui reprend toutes les infotmations du fichier TSV et ajoute en plus les nouvelles données calsulées des différents biovolumes et des classes de biovolumes
+#            - un fichier excel qui pour chaque rade et chaque classe de taille, fait la moyenne des biovolumes relatifs et rend la répartition moyennes des groupes trophiques et de leur biovolume en fonction de la taille.
+#            - deux graphiques/profils trophiques moyens des deux rades 
+#Malgré le fait que le script calcule différents types de biovolumes (Ellipse, plain et riddled), il n'utilise que celui Riddled pour les graphiques et les moyennes, c'est un choix personnel qui s'explqiue par le fait que le BV riddled semble être le plus approprié au vu de la morphologie des organismes qui peuvent avoir des formes très irrégulières, des trous, des filaments.
+#Le script utilise une liste taxonomique et chaque taxon est relié à un niveau trophique. Il est possible de modifier tous cela dans le dictionnaire appelée "trophic_levels"
+
+library(tidyverse)
+library(readr)
+library(openxlsx)
+
+# --- Fonctions utilitaires ---
+bv_to_esdum <- function(x) {
+  2 * ((3 / (4 * pi)) * x)^(1/3) * 1000
+}
+
+compute_bv <- function(path, output, metadata=NULL) {
+  options(dplyr.summarise.inform = FALSE)
+  
+  data <- read_tsv(path, col_types = list(object_time=col_time(),
+                                          object_annotation_time=col_time())) %>%
+    group_by(object_label, acq_id) %>% mutate(ghost_id=1:n()) %>% ungroup() %>%
+    mutate(unique_id = paste(acq_id,sample_operator,ghost_id,
+                             object_date,object_time,
+                             object_lat,object_lon,sep="_")) %>%
+    mutate(sample_total_volume = ifelse("sample_total_volume" %in% colnames(.), sample_total_volume, NA),
+           sample_concentrated_sample_volume = ifelse("sample_concentrated_sample_volume" %in% colnames(.), sample_concentrated_sample_volume, NA),
+           sample_dilution_factor = ifelse("sample_dilution_factor" %in% colnames(.), sample_dilution_factor, NA)) %>%
+    mutate(sample_dilution_factor = as.numeric(gsub(",", ".",sample_dilution_factor)))
+  
+  id <- unique(data$sample_id)
+  
+  if(!is.null(metadata)) {
+    for(i in unique(data$unique_id)) {
+      meta <- metadata[metadata$unique_id==i,]
+      data[data$unique_id==i,] <- mutate(data[data$unique_id==i,], !!!meta)
+    }
+  }
+  
+  data <- mutate(data,
+                 sample_total_volume = sample_total_volume/1000,
+                 sample_concentrated_sample_volume = sample_concentrated_sample_volume/1000/1000,
+                 acq_celltype = acq_celltype/1000/1000,
+                 acq_imaged_volume = acq_imaged_volume/1000/1000,
+                 pixelsize = process_pixel/1000)
+  
+  metadata <- select(data,
+                     unique_id, object_date, object_time, object_lat, object_lon,
+                     acq_id, sample_id, sample_operator,
+                     sample_total_volume, sample_concentrated_sample_volume,
+                     acq_celltype, acq_imaged_volume, pixelsize, sample_dilution_factor) %>% distinct()
+  
+  for (i in unique(metadata$unique_id)){
+    if(sum(is.na(metadata[metadata$unique_id==i,]))>0) {
+      pb <- colnames(metadata[metadata$unique_id==i,])[is.na(metadata[metadata$unique_id==i,])]
+      message(paste0("Warning ! [sample : ",unique(data$sample_id),"] missing metadata: ",paste(pb,collapse=", ")))
+      metadata[is.na(metadata) & metadata$unique_id==i] <- 1
+      data[pb] <- 1
+    }
+  }
+  
+  data <- mutate(data,
+                 major = object_major*pixelsize,
+                 minor = object_minor*pixelsize,
+                 area = object_area*(pixelsize^2),
+                 ar_elli = pi*(major/2)*(minor/2),
+                 BV_elli = (4/3)*(minor/2)*ar_elli,
+                 ESD_riddled = 2*(sqrt(object_area_exc*(pixelsize^2)/pi)),
+                 R3_riddled = (ESD_riddled/2)^3,
+                 BV_riddled = (4/3)*pi*R3_riddled,
+                 conver.uniqueID = sample_concentrated_sample_volume/(acq_imaged_volume*sample_total_volume*sample_dilution_factor))
+  
+  vimgsample <- data %>% select(sample_id, unique_id, acq_imaged_volume) %>% distinct() %>%
+    group_by(sample_id) %>% summarise(sample_imaged_volume=sum(acq_imaged_volume, na.rm=T))
+  
+  data <- left_join(data, vimgsample, by = "sample_id") %>%
+    mutate(conver.sample = sample_concentrated_sample_volume/(sample_imaged_volume*sample_total_volume*sample_dilution_factor))
+  
+  smin = 1e-12; smax = 1e4; k = 2^(1/8)
+  nb <- ceiling(log(smax/smin, base=k))
+  x <- smin*k^(1:nb)
+  x1 <- c(0,diff(x))
+  
+  class.f <- function(y){
+    a <- x[x <= y][which.min(abs(x[x <= y] - y))]
+    b <- x[x > y][which.min(abs(x[x > y] - y))]
+    id <- match(b, x)
+    norm <- x1[id]
+    data.frame(size_class.min=a, size_class.max=b, size_class.id=id, size_class.norm=norm)
+  }
+  
+  classes <- sapply(data$BV_riddled, class.f) %>% t %>% as.data.frame() %>% sapply(as.numeric)
+  colnames(classes) <- paste0(colnames(classes),"_riddled")
+  data <- bind_cols(data, as_tibble(classes))
+  
+  write_csv2(data, paste0(file.path(output,id),".csv"))
+  message(paste0("done : ",unique(data$sample_id)))
+  options(dplyr.summarise.inform = TRUE)
+  return(data)
+}
+
+# --- Dictionnaire trophique corrigé et complété ---
+trophic_levels <- tribble(
+  ~Taxon, ~Trophic,
+  "Transparent", "Non-vivant",
+  "Nitzschia", "Phototrophes",
+  "Ceratium", "Mixotrophes",
+  "Chaetoceros Tortissimus", "Phototrophes",
+  "Gonyaulacales" , "Mixotrophes",
+  "Pennales","Phototrophes",
+  "Pollen", "Non-vivant",
+  "Copepoda", "Prédateurs",
+  "Larvae", "Brouteurs",
+  "Licmophora", "Phototrophes",
+  "Dictyocysta", "Prédateurs",
+  "Acantharia", "Mixotrophes",
+  "Bacillariophyceae", "Phototrophes",
+  "Bacteriastrum", "Phototrophes",
+  "Bacteriastrum Furcatum", "Phototrophes",
+  "Calanoida", "Prédateurs",
+  "Chaetoceros", "Phototrophes",
+  "Chaetoceros Chain", "Phototrophes",
+  "Chaetocerotales", "Phototrophes",
+  "Ciliophora", "Prédateurs",
+  "Coscinodiscus", "Phototrophes",
+  "Corethron", "Phototrophes",
+  "Dictyocha", "Phototrophes",
+  "Ditylum", "Phototrophes",
+  "Guinardia", "Phototrophes",
+  "Leptocylindrus", "Phototrophes",
+  "Leptocylindracea", "Phototrophes",
+  "Navicula", "Phototrophes",
+  "Neoceratium", "Mixotrophes",
+  "Neoceratium Furca", "Mixotrophes",
+  "Neoceratium Fusus", "Mixotrophes",
+  "Neoceratium Candelabrum", "Mixotrophes",
+  "Oithona", "Prédateurs",
+  "Oithona Similis", "Prédateurs",
+  "Oithona Nana", "Prédateurs",
+  "Peridiniales", "Mixotrophes",
+  "Pleurosigma", "Phototrophes",
+  "Podolampas", "Mixotrophes",
+  "Protoperidinium", "Mixotrophes",
+  "Pseudo-Nitzschia", "Phototrophes",
+  "Pseudosolenia", "Phototrophes",
+  "Pyrocystis", "Phototrophes",
+  "Rhizosolenia", "Phototrophes",
+  "Scripsiella", "Mixotrophes",
+  "Skeletonema", "Phototrophes",
+  "Striatella", "Phototrophes",
+  "Thalassionema", "Phototrophes",
+  "Thalassionema Nitzschioides", "Phototrophes",
+  "Thalassiosirales", "Phototrophes",
+  "Tintinnida", "Prédateurs",
+  "Tintinnidiidae", "Prédateurs",
+  "Tiarina Fusus", "Prédateurs",
+  "Asterionellopsis", "Phototrophes",
+  "Codonella", "Prédateurs",
+  "Codonellidae", "Prédateurs",
+  "Climacocylis", "Prédateurs",
+  "Strombidiidae Sp.", "Prédateurs",
+  "Dinophyceae", "Mixotrophes",
+  "Chaetoceros Curvisetus", "Phototrophes",
+  "Chaetoceros Danicus", "Phototrophes",
+  "Chaetoceros Diversus", "Phototrophes",
+  "Chaetoceros Peruvianus", "Phototrophes",
+  "Cylindrotheca", "Phototrophes",
+  "Seaweed", "Phototrophes",
+  "Nauplii", "Brouteurs",
+  "Oikopleuridae", "Brouteurs",
+  "Nauplii-Molt", "Non-vivant",
+  "Egg Sac", "Non-vivant",
+  "Fecal Pellets", "Non-vivant",
+  "Bubble", "Non-vivant",
+  "Ghost", "Non-vivant",
+  "Badfocus", "Non-vivant",
+  "Dark", "Non-vivant",
+  "Light", "Non-vivant",
+  "Porifera Spicule", "Non-vivant",
+  "Fiber", "Non-vivant",
+  "Copepod Moult", "Non-vivant",
+  "Multiple Organisms", "Multiples",
+  "Othertocheck", "Non-identifié",
+  "Aggregate", "Non-vivant",
+  "Aggregates", "Non-vivant",
+  "Detritus", "Non-vivant",
+  "Part", "Non-vivant"
+)
+
+couleurs_trophiques <- c(
+  "Phototrophes" = "#66c2a5",
+  "Mixotrophes" = "#fc8d62",
+  "Prédateurs"   = "#8da0cb",
+  "Brouteurs"    = "#a6d854",
+  "Multiples"    = "#ffd92f",
+  "Non-identifié"= "#e78ac3"
+)
+
+# --- Traitement fichiers ---
+un_fichier_du_dossier <- file.choose()
+dossier_donnees <- dirname(un_fichier_du_dossier)
+dossier_sortie <- file.path(dossier_donnees, "bv_computes")
+dir.create(dossier_sortie, showWarnings = FALSE)
+
+fichiers <- list.files(dossier_donnees, pattern = "\\.tsv$", full.names = TRUE)
+data_all <- list()
+
+for (f in fichiers) {
+  data <- compute_bv(f, dossier_sortie)
+  
+  data <- data %>%
+    mutate(Taxon = str_extract(object_annotation_category, "^[^<]+") %>%
+             str_trim() %>%
+             str_to_title()) %>%
+    left_join(trophic_levels, by = "Taxon") %>%
+    mutate(Trophic = case_when(
+      is.na(Trophic) ~ "Non-identifié",
+      TRUE ~ Trophic
+    )) %>%
+    mutate(BV = BV_riddled * conver.sample) %>%
+    filter(Trophic != "Non-vivant") %>%  # Exclusion des non-vivants (Dark, Light, etc.)
+    rename(Taille_max = size_class.max_riddled,
+           class_id = size_class.id_riddled) %>%
+    mutate(Rade = case_when(
+      str_detect(sample_id, regex("Petite[_ ]?Rade", ignore_case = TRUE)) ~ "Petite Rade",
+      str_detect(sample_id, regex("Grande[_ ]?Rade", ignore_case = TRUE)) ~ "Grande Rade",
+      TRUE ~ "Inconnu"))
+  
+  # Graphique individuel
+  plot_data <- data %>%
+    group_by(Trophic, Taille_max, class_id) %>%
+    summarise(BV = sum(BV, na.rm = TRUE), .groups = "drop") %>%
+    group_by(class_id) %>%
+    mutate(per = BV / sum(BV, na.rm = TRUE) * 100) %>%
+    ungroup() %>%
+    mutate(esd_um = bv_to_esdum(Taille_max))
+  
+  p <- ggplot(plot_data, aes(x = esd_um, y = per, fill = Trophic)) +
+    geom_col(width = 1.2) +
+    scale_fill_manual(values = couleurs_trophiques) +
+    ylab("Biovolume (%)") + xlab("Taille (µm)") +
+    coord_cartesian(xlim = c(0, 400)) + theme_minimal()
+  
+  nom_fichier_plot <- paste0(dossier_sortie, "/", tools::file_path_sans_ext(basename(f)), "_bv_plot.png")
+  ggsave(nom_fichier_plot, plot = p, width = 10, height = 6)
+  print(paste("Graphique sauvegardé :", nom_fichier_plot))
+  
+  data_all[[f]] <- data
+}
+
+# --- Compilation ---
+donnees_combinees <- bind_rows(data_all)
+
+donnees_summarise <- donnees_combinees %>%
+  group_by(sample_id, Rade, class_id, Taille_max, Trophic) %>%
+  summarise(BV = sum(BV, na.rm = TRUE), .groups = "drop") %>%
+  group_by(sample_id, Rade, class_id) %>%
+  mutate(total_BV_class = sum(BV), per = (BV / total_BV_class) * 100) %>%
+  ungroup() %>%
+  mutate(esd_um = bv_to_esdum(Taille_max))
+
+# Vérification
+verif <- donnees_summarise %>%
+  group_by(sample_id, Rade, class_id) %>%
+  summarise(somme_per = sum(per)) %>%
+  filter(somme_per > 100)
+
+if(nrow(verif) > 0) {
+  print("⚠️ Attention : dépassement de 100%")
+  print(verif)
+} else {
+  print("✅ Tous les pourcentages sont cohérents.")
+}
+
+# --- Graphiques moyens par Rade ---
+donnees_moyenne <- donnees_summarise %>%
+  group_by(Rade, class_id, Taille_max, Trophic) %>%
+  summarise(mean_per = mean(per), .groups = "drop") %>%
+  group_by(Rade, class_id) %>%
+  mutate(mean_per = mean_per / sum(mean_per, na.rm = TRUE) * 100) %>%
+  ungroup() %>%
+  mutate(esd_um = bv_to_esdum(Taille_max))
+
+for (r in unique(donnees_moyenne$Rade)) {
+  plot_data <- filter(donnees_moyenne, Rade == r)
+  p <- ggplot(plot_data, aes(x = esd_um, y = mean_per, fill = Trophic)) +
+    geom_col(width = 1.2) +
+    scale_fill_manual(values = couleurs_trophiques) +
+    ylab("Biovolume moyen (%)") +
+    xlab("Taille (µm)") +
+    coord_cartesian(xlim = c(0, 400)) +
+    ggtitle(paste("Répartition trophique -", r)) +
+    theme_minimal(base_family = "sans") +
+    theme(
+      plot.background = element_rect(fill = "#1e1e1e", color = NA),
+      panel.background = element_rect(fill = "#1e1e1e", color = NA),
+      panel.grid = element_line(color = "#444444"),
+      
+      plot.title = element_text(color = "white", size = 16, face = "bold", hjust = 0.5),
+      axis.title.x = element_text(color = "white", size = 14, face = "bold"),
+      axis.title.y = element_text(color = "white", size = 14, face = "bold"),
+      axis.text.x = element_text(color = "white", size = 12),
+      axis.text.y = element_text(color = "white", size = 12),
+      legend.title = element_text(color = "white", size = 14, face = "bold"),
+      legend.text = element_text(color = "white", size = 12)
+    )
+  
+  nom_fichier_plot <- paste0(dossier_sortie, "/", gsub(" ", "_", r), "_bv_moyenne.png")
+  ggsave(nom_fichier_plot, plot = p, width = 10, height = 6)
+  print(paste("Graphique sauvegardé :", nom_fichier_plot))
+}
+
+# Export Excel
+wb <- createWorkbook()
+for (r in unique(donnees_moyenne$Rade)) {
+  addWorksheet(wb, r)
+  writeData(wb, r, filter(donnees_moyenne, Rade == r))
+}
+saveWorkbook(wb, file.path(dossier_sortie, "biovolume_moyenne_par_rade.xlsx"), overwrite = TRUE)
+print("📁 Fichier Excel sauvegardé.")
+
+# --- Détection automatique des taxons inconnus ---
+# 1. Extraction propre des noms de taxons
+donnees_taxons <- donnees_combinees %>%
+  mutate(Taxon = str_extract(object_annotation_category, "^[^<]+") %>%
+           str_trim() %>%
+           str_to_title())
+
+# 2. Comparaison avec dictionnaire trophique
+taxons_inconnus <- setdiff(unique(donnees_taxons$Taxon), trophic_levels$Taxon)
+
+if(length(taxons_inconnus) > 0) {
+  message("Taxons non référencés dans le dictionnaire trophique :")
+  print(taxons_inconnus)
+} else {
+  message("Tous les taxons sont référencés dans le dictionnaire trophique.")
+}
