@@ -1,0 +1,65 @@
+#8
+#Indice de Shannon
+#Ce script prend en entrée un dossier de fichier de Dénombrement Excel 
+#Rend en sortie un fichier excel avec pour chauque fichier de dénombrement, un indice de Shannon (1 par Tripliquat)
+#Il y a une liste de taxons à exclure qui peut être modifiée pour ajouter ou supprimer des groupes, elle s'appelle "taxons_exclus"
+#À la ligne 56 ajouter le chemin du fichier à utiliser pour commencer
+
+
+
+# Packages nécessaires
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(writexl)
+
+# Liste des taxons à exclure
+taxons_exclus <- c(
+  "transparent", "pollen", "part", "nauplii-molt", "othertocheck",
+  "multiple organisms", "aggregates", "badfocus", "bubble", "dark",
+  "detritus", "fiber", "light", "fecal pellets", "ghost", "chaetoceros chain ", "aggregate",
+  "egg sac", "larvae","copepod moult"
+)
+
+# Fonction pour calculer l'indice de Shannon
+indice_shannon <- function(abundances) {
+  total <- sum(abundances)
+  if (total == 0) return(0)
+  proportions <- abundances / total
+  -sum(proportions[proportions > 0] * log(proportions[proportions > 0]))
+}
+
+# Fonction de traitement d’un fichier Excel
+traiter_fichier <- function(filepath) {
+  df <- read_excel(filepath)
+  
+  # Filtrage des taxons exclus (insensible à la casse)
+  df_filtré <- df %>%
+    filter(!str_to_lower(Taxonomie) %in% taxons_exclus)
+  
+  # Calcul de l'indice pour chaque triplicat
+  indices <- df_filtré %>%
+    select(starts_with("Triplicat")) %>%
+    summarise(across(everything(), indice_shannon))
+  
+  # Résultat au format long
+  tibble(
+    Fichier = basename(filepath),
+    Triplicat = names(indices),
+    Indice_Shannon = as.numeric(indices)
+  )
+}
+
+# Dossier contenant les fichiers Excel
+dossier <- "~/Desktop/Résultats Stage Final/Dénombrement"  # <-- À adapter
+
+# Lister tous les fichiers .xlsx du dossier
+fichiers <- list.files(dossier, pattern = "\\.xlsx$", full.names = TRUE)
+
+# Traiter tous les fichiers et combiner les résultats
+résultats <- map_dfr(fichiers, traiter_fichier)
+
+# Sauvegarder dans un fichier Excel
+write_xlsx(résultats, "résultats_indice_shannon_Final.xlsx")
