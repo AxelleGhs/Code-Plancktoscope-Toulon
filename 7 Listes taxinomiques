@@ -1,9 +1,10 @@
 #7
 #Listes Taxonomiques 
 #Prend en entrée un dossier de fichiers de Dénombrement Excel
-#Rend en sortie un fichier excel avec une liste des taxons communs aux 2 rades, une liste des taxons exclusifs à la GR et une liste de taxons exclusifs à la PR.
+#Rend en sortie un fichier excel avec une liste des taxons communs aux 2 rades, une liste des taxons exclusifs à la GR, une liste de taxons exclusifs à la PR et la liste des non-vivants et autres.
 #Le nom des fichiers est déjà formaté par le script Dénombrement mais dans tous les cas il doit être le suivant : GR_JJMMAAA ou PR_JJMMAAAA
-#Dans le script il existe une liste de groupes à ne pas prendre en compte (les non-viants et autres) appelée taxons_a_ignorer. Dans le futur il est possible d'ajouter des groupes s'ils manquent à la litse.
+#Dans le script il existe une liste de groupes à ne pas prendre en compte (les non-viants et autres) appelée taxons_a_ignorer. Pour les futurs utilisateurs, il est possible d'ajouter des groupes s'ils manquent à la litse.
+
 
 library(readxl)
 library(dplyr)
@@ -50,10 +51,12 @@ for (fichier in fichiers) {
     select(Taxonomie) %>%
     filter(!is.na(Taxonomie)) %>%
     distinct() %>%
-    mutate(Taxonomie = normalize_taxon(Taxonomie)) %>%
-    filter(!(Taxonomie %in% taxons_a_ignorer))
+    mutate(
+      Taxon_normalise = normalize_taxon(Taxonomie)
+    ) %>%
+    filter(!(Taxon_normalise %in% taxons_a_ignorer))
   
-  noms_taxons <- data$Taxonomie
+  noms_taxons <- data$Taxonomie  # version originale conservée
   nom_fichier <- basename(fichier)
   
   if (grepl("^GR_", nom_fichier)) {
@@ -78,15 +81,18 @@ writeLines(sort(communs), "taxons_communs.txt")
 writeLines(sort(exclusifs_GR), "taxons_exclusifs_GR.txt")
 writeLines(sort(exclusifs_PR), "taxons_exclusifs_PR.txt")
 
-# 📊 Export XLSX
+
+# 📊 Export XLSX avec 4 feuilles
 wb <- createWorkbook()
 addWorksheet(wb, "Taxons communs")
 addWorksheet(wb, "Exclusifs GR")
 addWorksheet(wb, "Exclusifs PR")
+addWorksheet(wb, "Autre")  # Ajout de la feuille "Autre"
 
 writeData(wb, "Taxons communs", data.frame(Taxon = sort(communs)))
 writeData(wb, "Exclusifs GR", data.frame(Taxon = sort(exclusifs_GR)))
 writeData(wb, "Exclusifs PR", data.frame(Taxon = sort(exclusifs_PR)))
+writeData(wb, "Autre", data.frame(Taxons_a_ignorer = sort(taxons_a_ignorer)))  # Liste ignorée
 
 saveWorkbook(wb, "résumé_taxons.xlsx", overwrite = TRUE)
 
